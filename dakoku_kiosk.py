@@ -162,7 +162,7 @@ def card(master, **kw):
 # ---------------------------------------------------------------- App
 
 class KioskApp:
-    def __init__(self, root, api, camera_options=None, fullscreen=True, hide_cursor=False, window_size=(1024, 600)):
+    def __init__(self, root, api, camera_options=None, camera_autostart=False, fullscreen=True, hide_cursor=False, window_size=(1024, 600)):
         self.root = root
         self.api = api
         self.results = queue.Queue()   # ワーカースレッド -> UI スレッド
@@ -197,6 +197,8 @@ class KioskApp:
                 on_scan=lambda code: self.results.put(("scan", True, code)),
                 on_status=lambda state, msg: self.results.put(("camera_status", True, (state, msg))),
                 **(camera_options or {}))
+            if not camera_autostart:
+                self.scanner.awake.clear()   # 起動時は一時停止状態で待つ
 
         self._setup_fonts()
         self._build()
@@ -270,6 +272,7 @@ class KioskApp:
             self.btn_camera = FlatButton(left, "カメラを一時停止", self.toggle_camera, AMBER,
                                          AMBER_DARK, self.f_button, pady=p * 3 // 4)
             self.btn_camera.pack(side="bottom", fill="x", padx=p, pady=(0, p // 2))
+            self._update_camera_button()
         else:
             FlatButton(left, "名前から選んで打刻", self.open_picker, BLUE, BLUE_DARK,
                        self.f_button, pady=p * 3 // 4
@@ -365,16 +368,22 @@ class KioskApp:
     def toggle_camera(self):
         if self.scanner.awake.is_set():
             self.scanner.sleep()
-            self.btn_camera.config(text="▶ カメラを再開")
-            self.btn_camera.set_colors(BLUE, BLUE_DARK)
+            self._update_camera_button()
         else:
             self.resume_camera()
 
     def resume_camera(self):
         if not self.scanner.awake.is_set():
             self.scanner.wake()
+            self._update_camera_button()
+
+    def _update_camera_button(self):
+        if self.scanner.awake.is_set():
             self.btn_camera.config(text="カメラを一時停止")
             self.btn_camera.set_colors(AMBER, AMBER_DARK)
+        else:
+            self.btn_camera.config(text="▶ カメラを再開")
+            self.btn_camera.set_colors(BLUE, BLUE_DARK)
 
     # ---- background work
 
@@ -643,7 +652,8 @@ def main():
 
     root = tk.Tk()
     KioskApp(root, Api(api_url, timeout=float(cfg.get("timeout", 10))),
-             camera_options=camera_options, fullscreen=fullscreen, hide_cursor=hide_cursor,
+             camera_options=camera_options,
+             camera_autostart=is_true(cfg.get("camera_autostart", "false")), fullscreen=fullscreen, hide_cursor=hide_cursor,
              window_size=tuple(int(v) for v in args.size.split("x")))
     root.mainloop()
 

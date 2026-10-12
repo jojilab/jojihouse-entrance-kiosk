@@ -10,6 +10,8 @@ timeout = 10
 
 ; カメラ: auto (Pi カメラ → USB カメラの順に探す) / picamera2 / デバイス番号 (0, 1...) / /dev/video0 など
 camera = auto
+; 起動時にカメラを動かす (false なら一時停止状態で起動し、ボタンか映像エリアのタップで開始)
+camera_autostart = false
 ; プレビューを鏡像表示する (利用者の方を向いたカメラなら true が自然)
 camera_mirror = true
 ; 同じバーコードは、写らなくなってからこの秒数が経つまで再打刻しない
