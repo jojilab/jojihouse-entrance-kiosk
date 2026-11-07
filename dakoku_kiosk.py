@@ -59,6 +59,7 @@ RESULT_AUTO_CLOSE_MS = 5_000      # 結果表示の自動クローズ
 PICKER_AUTO_CLOSE_MS = 60_000     # 名前選択画面・確認画面の自動クローズ
 PREVIEW_INTERVAL_MS = 66          # カメラプレビューの更新間隔
 SCANNER_RESET_SEC = 0.5           # これ以上キー入力が空いたらバーコード入力をリセット
+TAP_SLOP_PX = 10                  # 名前一覧でこれ以上指が動いたらタップではなくスクロール扱い
 
 SCAN_HINT = "バーコードをカメラにかざしてください"
 PAUSED_HINT = "カメラは一時停止中です"
@@ -599,37 +600,83 @@ class KioskApp:
                      font=self.f_body).pack(pady=p)
             return
         users = list(self.users)
+        state = {"selected": None, "press_y": 0, "moved": False}
 
         def submit():
-            sel = listbox.curselection()
-            if sel:
-                self.confirm_punch(users[sel[0]], sel[0])
+            if state["selected"] is not None:
+                self.confirm_punch(users[state["selected"]], state["selected"])
 
         button = FlatButton(content, "入退室記録", submit, BLUE, BLUE_DARK,
                             self.f_button, pady=p // 2)
         button.pack(side="bottom", fill="x", pady=(p // 2, 0))
         button.set_enabled(False)
 
-        list_frame = tk.Frame(content, bg=CARD)
+        # tk.Listbox は行の高さを変えられずミスタップしやすいので、
+        # Canvas に 1 人 1 行の大きめのラベルを並べてスクロールさせる
+        list_frame = tk.Frame(content, bg=CARD, highlightthickness=1,
+                              highlightbackground=BORDER)
         list_frame.pack(fill="both", expand=True)
         scrollbar = tk.Scrollbar(list_frame, width=int(p * 2))
         scrollbar.pack(side="right", fill="y")
-        listbox = tk.Listbox(
-            list_frame, font=self.f_list, activestyle="none", exportselection=False,
-            selectbackground=BLUE, selectforeground="white", bg=CARD, fg=TEXT,
-            highlightthickness=1, highlightbackground=BORDER, relief="flat",
-            yscrollcommand=scrollbar.set, height=1)  # 高さは残り領域に任せる
-        listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=listbox.yview)
-        for user in users:
-            listbox.insert("end", user.get("name", ""))
-        listbox.bind("<<ListboxSelect>>",
-                     lambda e: button.set_enabled(bool(listbox.curselection())))
+        canvas = tk.Canvas(list_frame, bg=CARD, highlightthickness=0,
+                           yscrollcommand=scrollbar.set, height=1)  # 高さは残り領域に任せる
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=canvas.yview)
+        inner = tk.Frame(canvas, bg=CARD)
+        window = canvas.create_window(0, 0, window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+
+        rows = []
+
+        def select(index):
+            if state["selected"] is not None:
+                rows[state["selected"]].config(bg=CARD, fg=TEXT)
+            rows[index].config(bg=BLUE, fg="white")
+            state["selected"] = index
+            button.set_enabled(True)
+
+        # 指でなぞったらスクロール、動かさずに離したらその行を選択
+        def on_press(event):
+            state["press_y"], state["moved"] = event.y_root, False
+            canvas.scan_mark(0, event.y_root)
+
+        def on_motion(event):
+            if abs(event.y_root - state["press_y"]) > TAP_SLOP_PX:
+                state["moved"] = True
+            if state["moved"]:
+                canvas.scan_dragto(0, event.y_root, gain=1)
+
+        def on_release(event, index):
+            if not state["moved"]:
+                select(index)
+
+        def on_wheel(event):
+            step = -1 if event.num == 4 or event.delta > 0 else 1
+            canvas.yview_scroll(step, "units")
+
+        for index, user in enumerate(users):
+            row = tk.Label(inner, text=user.get("name", ""), bg=CARD, fg=TEXT,
+                           font=self.f_list, anchor="w", padx=p, pady=p)
+            row.pack(fill="x")
+            row.bind("<ButtonPress-1>", on_press)
+            row.bind("<B1-Motion>", on_motion)
+            row.bind("<ButtonRelease-1>", lambda e, i=index: on_release(e, i))
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                row.bind(seq, on_wheel)
+            rows.append(row)
+            tk.Frame(inner, bg=BORDER, height=1).pack(fill="x")
+
         # 確認画面から「戻る」で来たときは、選んでいた人を選択した状態にする
         if selected is not None and selected < len(users):
-            listbox.selection_set(selected)
-            listbox.see(selected)
-            button.set_enabled(True)
+            select(selected)
+
+            def scroll_to_selected():
+                inner.update_idletasks()
+                total = inner.winfo_height()
+                if total:
+                    canvas.yview_moveto(rows[selected].winfo_y() / total)
+            canvas.after_idle(scroll_to_selected)
 
 
 # ---------------------------------------------------------------- main
