@@ -54,8 +54,7 @@ GREEN = "#22c55e"
 RED = "#ef4444"
 PREVIEW_BG = "#111827"  # gray-900
 
-REFRESH_INTERVAL_MS = 30_000      # ログ・在室者の定期更新
-USERS_REFRESH_INTERVAL_MS = 300_000  # ユーザー一覧の定期更新
+RETRY_INTERVAL_MS = 30_000        # 取得に失敗したときだけ、この間隔で再試行する
 RESULT_AUTO_CLOSE_MS = 5_000      # 結果表示の自動クローズ
 PICKER_AUTO_CLOSE_MS = 60_000     # 名前選択画面・確認画面の自動クローズ
 PREVIEW_INTERVAL_MS = 66          # カメラプレビューの更新間隔
@@ -175,6 +174,7 @@ class KioskApp:
         self.preview_photo = None
         self.idle_status = (SCAN_HINT, TEXT)
         self.camera_state = None
+        self.retry_timers = {}         # 取得失敗時の再試行タイマー (種類ごとに 1 つ)
 
         root.title("入退室管理システム")
         root.configure(bg=BG)
@@ -404,26 +404,40 @@ class KioskApp:
             pass
         self.root.after(100, self._poll_results)
 
-    def refresh_all(self, schedule=True):
+    # 定期ポーリングはしない。ログ・在室者は起動時と打刻後、
+    # ユーザー一覧は起動時と名前選択を開いたときに取得する。
+    # 取得に失敗したとき (起動直後でネットワークが未接続など) だけ再試行する。
+
+    def refresh_all(self):
         self._run("logs", self.api.access_logs, 10)
         self._run("current", self.api.current_users)
-        if schedule:
-            self.root.after(REFRESH_INTERVAL_MS, self.refresh_all)
 
     def refresh_users(self):
         self._run("users", self.api.users)
-        self.root.after(USERS_REFRESH_INTERVAL_MS, self.refresh_users)
+
+    def _retry_later(self, func):
+        key = func.__name__
+        if key in self.retry_timers:   # logs と current が両方失敗しても 1 回だけ
+            return
+
+        def fire():
+            del self.retry_timers[key]
+            func()
+        self.retry_timers[key] = self.root.after(RETRY_INTERVAL_MS, fire)
 
     # ---- result handlers
 
     def _on_users(self, ok, value):
         if ok:
             self.users = value
+        else:
+            self._retry_later(self.refresh_users)
 
     def _on_logs(self, ok, value):
         frame = self.log_frame
         if not ok:
             self._set_placeholder(frame, "入退室ログの取得に失敗しました", RED)
+            self._retry_later(self.refresh_all)
             return
         if not value:
             self._set_placeholder(frame, "ログがありません")
@@ -447,6 +461,7 @@ class KioskApp:
         frame = self.current_frame
         if not ok:
             self._set_placeholder(frame, "在室ユーザーの取得に失敗しました", RED)
+            self._retry_later(self.refresh_all)
             return
         self.lbl_current_title.config(text=f"現在の在室者 ({len(value)}人)")
         if not value:
@@ -467,7 +482,7 @@ class KioskApp:
         if not ok:
             self.show_error(str(value))
             return
-        self.refresh_all(schedule=False)
+        self.refresh_all()
         self.show_result(value.get("entrance_log") or {})
 
     # ---- actions
@@ -556,6 +571,9 @@ class KioskApp:
         self._open_overlay("エラー", RED, [(message, self.f_body)])
 
     def open_picker(self, selected=None):
+        if selected is None:
+            # 新規登録者を拾うため、開くたびに裏で取り直す (反映は次に開いたとき)
+            self.refresh_users()
         self._open_overlay("名前から選んで打刻", BLUE, tall=True,
                            build=lambda content: self._build_picker(content, selected),
                            auto_close_ms=PICKER_AUTO_CLOSE_MS)
@@ -579,7 +597,6 @@ class KioskApp:
         if not self.users:
             tk.Label(content, text="ユーザー一覧を取得できていません", bg=CARD, fg=RED,
                      font=self.f_body).pack(pady=p)
-            self.refresh_users()
             return
         users = list(self.users)
 
